@@ -1,0 +1,50 @@
+---
+title: "election-spend-fundraise-analysis"
+author: "Will Schrepferman"
+date: "11/14/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(dplyr)
+library(readxl)
+library(janitor)
+```
+
+```{r scrape-results}
+# PRESIDENTIAL
+# Sources: 2020 - Cook Political Report: https://cookpolitical.com/2020-national-popular-vote-tracker
+#          2016 - FEC: https://www.fec.gov/documents/1890/federalelections2016.xlsx
+
+# 2020 presidential results:
+
+pres_2020 <- read_csv("Popular vote backend - Sheet1.csv") %>%
+  clean_names() %>%
+  select(stateid, dem_percent, rep_percent) %>%
+  mutate(dem_percent2020 = str_replace_all(dem_percent, "%", " "), rep_percent2020 = str_replace_all(rep_percent, "%", " ")) %>%
+  mutate(state = stateid, d_percent2020 = as.numeric(dem_percent2020), r_percent2020 = as.numeric(rep_percent2020)) %>%
+  select(state, d_percent2020, r_percent2020) %>%
+  arrange(state) %>%
+  filter(state != "NA")
+
+# 2016 presidential results:
+
+pres_2016 <- read_excel("federalelections2016.xlsx") %>%
+  clean_names() %>%
+  mutate(state = x1, d_votes = clinton_d_5, r_votes = trump_r_4, total_vote) %>%
+  select(state, d_votes, r_votes, total_vote) %>%
+  mutate(d_percent2016 = 100*round(d_votes/total_vote, 4), r_percent2016 = 100*round(r_votes/total_vote, 4)) %>%
+  select(state, d_percent2016, r_percent2016) %>%
+  arrange(state)
+
+full_pres <- left_join(pres_2016, pres_2020, by = "state") %>%
+  mutate(d_diff = (d_percent2020 - d_percent2016), r_diff = (r_percent2020 - r_percent2016))
+
+
+
+```
+
+
+
