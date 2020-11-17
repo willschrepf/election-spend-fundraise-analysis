@@ -11,6 +11,7 @@ library(tidyverse)
 library(dplyr)
 library(readxl)
 library(janitor)
+library(ggplot2)
 ```
 
 ```{r scrape-results}
@@ -40,11 +41,53 @@ pres_2016 <- read_excel("federalelections2016.xlsx") %>%
   arrange(state)
 
 full_pres <- left_join(pres_2016, pres_2020, by = "state") %>%
-  mutate(d_diff = (d_percent2020 - d_percent2016), r_diff = (r_percent2020 - r_percent2016))
-
-
+  mutate(margin_16 = (d_percent2016 - r_percent2016),
+         margin_20 = (d_percent2020 - r_percent2020),
+         
+         # margin_diff is the percentage swing towards the Dem candidate from '16 to '20
+         
+         margin_diff = (margin_20 - margin_16))
 
 ```
+
+```{r fundraising}
+fundraising_data <- read_csv("raw fec individual contributions by state and date.csv")
+
+# function to extract last x characters of a string
+substrRight <- function(x, n){
+  substr(x, nchar(x)-n+1, nchar(x))
+}
+
+fundraising_data <- fundraising_data %>%
+  mutate(year = substrRight(date, 4)) %>%
+  mutate(month = substr(date, 1, 1)) %>%
+  filter(year == 2020) %>%
+  select(recipient, state, date, contribution_amount)
+
+fundraising_data %>%
+  group_by(recipient) %>%
+  summarise(total = sum(contribution_amount))
+
+pres_fundraising_biden <- fundraising_data %>%
+  group_by(recipient, state) %>%
+  filter(recipient == "BIDEN FOR PRESIDENT") %>%
+  summarise(biden_sum = sum(contribution_amount))
+
+pres_fundraising_trump <- fundraising_data %>%
+  group_by(recipient, state) %>%
+  filter(recipient == "DONALD J. TRUMP FOR PRESIDENT, INC.") %>%
+  summarise(trump_sum = sum(contribution_amount))
+
+nearly_comb_data <- right_join(pres_fundraising_biden, full_pres, by = "state")
+
+comb_data <- right_join(pres_fundraising_trump, nearly_comb_data, by = "state") %>%
+  select(state, biden_sum, trump_sum, d_percent2016, margin_diff)
+
+
+  
+
+```
+
 
 
 
