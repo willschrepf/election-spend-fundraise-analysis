@@ -12,6 +12,9 @@ library(dplyr)
 library(readxl)
 library(janitor)
 library(ggplot2)
+library(lubridate)
+library(ISOweek)
+library(zoo)
 ```
 
 ```{r scrape-results}
@@ -48,43 +51,715 @@ full_pres <- left_join(pres_2016, pres_2020, by = "state") %>%
          
          margin_diff = (margin_20 - margin_16))
 
+write_csv(full_pres, "exports/full_pres_results.csv")
+
 ```
 
-```{r fundraising}
-fundraising_data <- read_csv("raw fec individual contributions by state and date.csv")
+```{r fb_data}
+biden_fb_raw <- read_csv("biden_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
 
-# function to extract last x characters of a string
-substrRight <- function(x, n){
-  substr(x, nchar(x)-n+1, nchar(x))
-}
+st_crosswalk <- tibble(state_name = state.name) %>%
+  bind_cols(tibble(abb = state.abb)) %>% 
+  bind_rows(tibble(state_name = "District of Columbia", abb = "DC"))
+ 
+biden_fb <- left_join(biden_fb_raw, st_crosswalk, by = "state_name") %>%
+  mutate(state = abb) %>%
+  select(date, state, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
 
-fundraising_data <- fundraising_data %>%
-  mutate(year = substrRight(date, 4)) %>%
-  mutate(month = substr(date, 1, 1)) %>%
-  filter(year == 2020) %>%
-  select(recipient, state, date, contribution_amount)
+biden_fb_grouped <- biden_fb %>%
+  group_by(state) %>%
+  summarize(total_spend_biden = sum(spend_avg))
 
-fundraising_data %>%
-  group_by(recipient) %>%
-  summarise(total = sum(contribution_amount))
+write_csv(biden_fb_grouped, "exports/biden_facebook_spend.csv")
 
-pres_fundraising_biden <- fundraising_data %>%
-  group_by(recipient, state) %>%
-  filter(recipient == "BIDEN FOR PRESIDENT") %>%
-  summarise(biden_sum = sum(contribution_amount))
 
-pres_fundraising_trump <- fundraising_data %>%
-  group_by(recipient, state) %>%
-  filter(recipient == "DONALD J. TRUMP FOR PRESIDENT, INC.") %>%
-  summarise(trump_sum = sum(contribution_amount))
+trump_fb_raw <- read_csv("trump_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
 
-nearly_comb_data <- right_join(pres_fundraising_biden, full_pres, by = "state")
+st_crosswalk <- tibble(state_name = state.name) %>%
+  bind_cols(tibble(abb = state.abb)) %>% 
+  bind_rows(tibble(state_name = "District of Columbia", abb = "DC"))
+ 
+trump_fb <- left_join(trump_fb_raw, st_crosswalk, by = "state_name") %>%
+  mutate(state = abb) %>%
+  select(date, state, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
 
-comb_data <- right_join(pres_fundraising_trump, nearly_comb_data, by = "state") %>%
-  select(state, biden_sum, trump_sum, d_percent2016, margin_diff)
+trump_fb_grouped <- trump_fb %>%
+  group_by(state) %>%
+  summarize(total_spend_trump = sum(spend_avg))
 
+write_csv(trump_fb_grouped, "exports/trump_facebook_spend.csv")
+
+
+```
+
+```{r graphs}
+full_data <- left_join(biden_fb_grouped, full_pres, by = "state")
+full_data <- left_join(trump_fb_grouped, full_data, by = "state")
+
+full_data <- full_data %>%
+  mutate(winner = ifelse(d_percent2020 > r_percent2020, "D", "R"))
+
+test_plot_biden <- full_data %>%
+  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(x = total_spend_biden, y = margin_diff)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2)
+
+test_plot_trump <- full_data %>%
+  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(x = total_spend_trump, y = -margin_diff)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2)
+
+full_data_longer <- full_data %>%
+  pivot_longer(cols = c("total_spend_trump", "total_spend_biden"), names_to = "candidate", values_to = "total_spend")
+
+
+full_data_longer %>%
+  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(factor(state), y = total_spend, fill = candidate)) +
+  geom_bar(position = "dodge", stat="identity") + 
+  scale_fill_manual("legend", values = c("total_spend_biden" = "blue", "total_spend_trump" = "red")) +
+  geom_text(aes(label = winner))
 
   
+```
+
+
+```{r senate_results}
+senate_raw <- read_excel("senate-results.xlsx") %>%
+  mutate(state = State, dem_percent = 100*round(as.numeric(Dem.), 3), rep_percent = 100*round(as.numeric(Rep.), 3)) %>%
+  select(state, dem_percent, rep_percent)
+
+write_csv(senate_raw, "exports/senate_results.csv")
+
+
+smp_fb_raw <- read_csv("smp_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+ 
+smp_fb <- left_join(smp_fb_raw, st_crosswalk, by = "state_name") %>%
+  mutate(state = abb) %>%
+  select(date, state, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+
+smp_fb_grouped <- smp_fb %>%
+  group_by(state) %>%
+  summarize(total_spend_smp = sum(spend_avg))
+
+write_csv(smp_fb_grouped, "exports/smp_facebook_spend.csv")
+
+
+
+slf_fb_raw <- read_csv("slf_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+ 
+slf_fb <- left_join(slf_fb_raw, st_crosswalk, by = "state_name") %>%
+  mutate(state = abb) %>%
+  select(date, state, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+
+slf_fb_grouped <- slf_fb %>%
+  group_by(state) %>%
+  summarize(total_spend_slf = sum(spend_avg))
+
+write_csv(slf_fb_grouped, "exports/slf_facebook_spend.csv")
+
+
+all_senate_fb_grouped <- right_join(slf_fb_grouped, smp_fb_grouped, by = "state")
+
+full_senate_data <- right_join(all_senate_fb_grouped, senate_raw, by = "state") %>%
+  mutate(dem_margin = dem_percent - rep_percent) %>%
+  mutate(rep_margin = rep_percent - dem_percent) %>%
+  mutate(winner = ifelse(dem_percent > rep_percent, "D", "R"))
+
+test_plot_dems <- full_senate_data %>%
+  filter(abs(dem_margin) < 10) %>%
+  ggplot(aes(x = total_spend_smp, y = dem_margin)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2)
+
+test_plot_rep <- full_senate_data %>%
+  filter(abs(rep_margin) < 10) %>%
+  ggplot(aes(x = total_spend_slf, y = rep_margin)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2)
+
+full_sen_data_longer <- full_senate_data %>%
+  pivot_longer(cols = c("total_spend_slf", "total_spend_smp"), names_to = "party", values_to = "total_spend")
+  
+
+
+full_sen_data_longer %>%
+  filter(abs(rep_margin) < 10) %>%
+  ggplot(aes(factor(state), y = total_spend, fill = party)) +
+  geom_bar(position = "dodge", stat="identity") + 
+  scale_fill_manual("legend", values = c("total_spend_smp" = "blue", "total_spend_slf" = "red")) +
+  geom_text(aes(label = winner))
+
+```
+
+```{r house}
+hmp_fb_raw <- read_csv("hmp_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+ 
+hmp_fb <- left_join(hmp_fb_raw, st_crosswalk, by = "state_name") %>%
+  mutate(state = abb) %>%
+  select(date, state, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+
+hmp_fb_grouped <- hmp_fb %>%
+  group_by(state) %>%
+  summarize(total_spend_cmp = sum(spend_avg))
+
+write_csv(hmp_fb_grouped, "exports/hmp_facebook_spend.csv")
+
+
+clf_fb_raw <- read_csv("clf_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+ 
+clf_fb <- left_join(clf_fb_raw, st_crosswalk, by = "state_name") %>%
+  mutate(state = abb) %>%
+  select(date, state, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper)
+
+clf_fb_grouped <- clf_fb %>%
+  group_by(state) %>%
+  summarize(total_spend_clf = sum(spend_avg))
+
+write_csv(clf_fb_grouped, "exports/clf_facebook_spend.csv")
+```
+
+
+```{r experimenting}
+testing <- full_pres_results %>%
+  select(state, biden_sum, trump_sum) %>%
+  right_join(full_data, by = "state")
+
+trump_dr <- read_csv("donor_research_data/Trump.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(trump_fundraise = sum(sum))
+
+# AA? AE? What are these odd states
+
+trump_fundraise_plot <- right_join(trump_dr, full_pres, by = "state") %>%
+  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(x = trump_fundraise, y = -margin_diff)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2)
+
+
+
+biden_dr <- read_csv("donor_research_data/Biden.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(biden_fundraise = sum(sum))
+
+# AA? AE? What are these odd states
+
+biden_fundraise_plot <- right_join(biden_dr, full_pres, by = "state") %>%
+  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(x = biden_fundraise, y = margin_diff)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2)
+
+
+```
+
+
+```{r read_dr}
+biden_dr <- read_csv("donor_research_data/Biden.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(biden_fundraise = sum(sum))
+
+#write_csv(biden_dr, "exports/biden_fundraising.csv")
+
+#ggplot(biden_dr_raw, aes(x=date, y=value)) +
+#  geom_line() + 
+#  xlab("")
+
+trump_dr <- read_csv("donor_research_data/Trump.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(trump_fundraise = sum(sum))
+
+#write_csv(trump_dr, "exports/trump_fundraising.csv")
+
+
+clf_dr <- read_csv("donor_research_data/Congressional Leadership Fund.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(clf_fundraise = sum(sum))
+
+#write_csv(clf_dr, "exports/clf_fundraising.csv")
+
+
+hmp_dr <- read_csv("donor_research_data/House Majority.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(hmp_fundraise = sum(sum))
+
+#write_csv(hmp_dr, "exports/hmp_fundraising.csv")
+
+
+smp_dr <- read_csv("donor_research_data/SMP.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(smp_fundraise = sum(sum))
+
+#write_csv(smp_dr, "exports/smp_fundraising.csv")
+
+
+slf_dr <- read_csv("donor_research_data/Senate Leadership Fund.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code) %>%
+  group_by(state) %>%
+  summarise(slf_fundraise = sum(sum))
+
+#write_csv(slf_dr, "exports/slf_fundraising.csv")
+
+
+```
+```{r timeseries}
+date_in_week <- function(year, week, weekday){
+  w <- paste0(year, "-W", sprintf("%02d", week), "-", weekday)
+  ISOweek2date(w)
+}
+
+date_in_week(year = 2014, week = 10, weekday = 1)
+
+biden_dr_dates <- read_csv("donor_research_data/Biden.csv") %>%
+  mutate(date = contribution_date) %>%
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total = sum(sum))
+
+trump_dr_dates <- read_csv("donor_research_data/Trump.csv") %>%
+  mutate(date = contribution_date) %>%
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total = sum(sum))
+
+biden_fb_dates <- read_csv("biden_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper) %>%
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total = sum(spend_avg))
+
+trump_fb_dates <- read_csv("trump_facebook.csv") %>%
+  clean_names() %>%
+  mutate(state_name = region,
+         spend_avg = ((spend_lower + spend_upper)/2)) %>%
+  select(date, state_name, spend_avg, spend_lower, spend_upper, impressions_lower, impressions_upper) %>%
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total = sum(spend_avg))
+
+ggplot(biden_dr_dates,aes(x = week, y = total))+geom_line(aes(color="Biden"))+
+  geom_line(data=trump_dr_dates,aes(color="Trump"))+
+  labs(color="Candidate", title = "Weekly Fundraising in 2020 Presidential Election", x = "") +
+  scale_color_manual(values=c("blue", "red")) +
+  scale_x_date(date_breaks = "months" , date_labels = "%b")
+
+ggplot(biden_fb_dates,aes(x = week, y = total))+geom_line(aes(color="Biden"))+
+  geom_line(data=trump_fb_dates,aes(color="Trump"))+
+  labs(color="Candidate", title = "Weekly Facebook Ad Spending in 2020 Presidential Election", x = "") +
+  scale_color_manual(values=c("blue", "red")) + 
+  scale_x_date(date_breaks = "months" , date_labels = "%b")
+
+
+
+
+
+biden_all <- full_join(biden_fb_dates, biden_dr_dates, by = "week") %>%
+  mutate(fb_spend = total.x, dr_fundraise = total.y) %>%
+  select(week, fb_spend, dr_fundraise)
+
+write_csv(biden_all, "graph_data_1/biden_weekly.csv")
+
+trump_all <- right_join(trump_fb_dates, trump_dr_dates, by = "week") %>%
+  mutate(fb_spend = total.x, dr_fundraise = total.y) %>%
+  select(week, fb_spend, dr_fundraise)
+
+write_csv(trump_all, "graph_data_1/trump_weekly.csv")
+
+
+ggplot(biden_all, aes(x = week, y = dr_fundraise)) + 
+  geom_line(aes(color="Biden"))+
+
+  labs(color="Candidate", title = "Fundraising and Ad Spending in the 2020 Election", subtitle = "As Percent of Total Daily Fundraising") +
+  scale_color_manual(values=c("blue", "red")) + 
+  scale_x_date(date_breaks = "months" , date_labels = "%b")
+
+
+biden_fb_graph <- biden_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  select(date, spend_avg, impressions_avg) %>%
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total_spend = sum(spend_avg), total_impressions = sum(impressions_avg))
+
+write_csv(biden_fb_graph, "graph_data_1/biden_fb_graph.csv")
+
+biden_fb_plot <- ggplot(biden_fb_graph, aes(x = week)) +
+  geom_line(aes(y = total_spend, colour = "Ad Spending", linetype = "Ad Spending")) +
+  
+  geom_line(aes(y = total_impressions/20, colour = "Impressions", linetype = "Impressions")) +
+  
+  scale_y_continuous(sec.axis = sec_axis(~.*20, name = "Impressions")) +
+  
+  labs(y = "Ad Spending", x = "", colour = "Variable", linetype = "Variable", title = "Biden Facebook Ad Spending versus Impressions") +
+  scale_color_manual(name="Variable",
+                       breaks = c("Impressions", "Ad Spending"),
+                       values = c("Impressions" = "darkblue", "Ad Spending" = "darkblue")) +
+
+  scale_linetype_manual(breaks = c("Impressions", "Ad Spending"),
+                        values = c("Impressions" = "dashed", "Ad Spending" = "solid")) +
+  theme_minimal()
+
+
+trump_fb_graph <- trump_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  select(date, spend_avg, impressions_avg) %>%
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total_spend = sum(spend_avg), total_impressions = sum(impressions_avg))
+
+write_csv(trump_fb_graph, "graph_data_1/trump_fb_graph.csv")
+
+
+trump_fb_plot <- ggplot(trump_fb_graph, aes(x = week)) +
+  geom_line(aes(y = total_spend, colour = "Ad Spending", linetype = "Ad Spending")) +
+  
+  geom_line(aes(y = total_impressions/20, colour = "Impressions", linetype = "Impressions")) +
+  
+  scale_y_continuous(sec.axis = sec_axis(~.*20, name = "Impressions")) +
+  
+  labs(y = "Ad Spending", x = "", colour = "Variable", linetype = "Variable", title = "Trump Facebook Ad Spending versus Impressions") +
+  scale_color_manual(name="Variable",
+                       breaks = c("Impressions", "Ad Spending"),
+                       values = c("Impressions" = "red", "Ad Spending" = "red")) +
+
+  scale_linetype_manual(breaks = c("Impressions", "Ad Spending"),
+                        values = c("Impressions" = "dashed", "Ad Spending" = "solid")) +
+  theme_minimal()
+
+biden_fb_single_plot <- biden_fb_graph %>%
+  mutate(views_per_dollar = total_impressions/total_spend) %>%
+  select(week, views_per_dollar)
+
+trump_fb_single_plot <- trump_fb_graph %>%
+  mutate(views_per_dollar = total_impressions/total_spend) %>%
+  select(week, views_per_dollar)
+
+ggplot(biden_fb_single_plot, aes(x = week, y = views_per_dollar))+geom_line(aes(color="Biden"))+
+  geom_line(data=trump_fb_single_plot, aes(color="Trump")) +
+  labs(color="Candidate", title = "Facebook Ads - Views per Dollar in 2020 Presidential Election", x = "") +
+  scale_color_manual(values=c("blue", "red")) + 
+  scale_x_date(date_breaks = "months" , date_labels = "%b")
+
+
+biden_fb_states <- biden_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  mutate(views_per_dollar = impressions_lower/spend_avg) %>%
+  group_by(state) %>%
+  summarize(biden_avg_view_per_dollar = mean(views_per_dollar))
+
+trump_fb_states <- trump_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  mutate(views_per_dollar = impressions_lower/spend_avg) %>%
+  group_by(state) %>%
+  summarize(trump_avg_view_per_dollar = mean(views_per_dollar))
+
+state_effectiveness <- left_join(biden_fb_states, trump_fb_states, by = "state") %>%
+  mutate(percent_trump_more_effective_than_biden = (trump_avg_view_per_dollar/biden_avg_view_per_dollar) - 1) %>%
+  arrange(percent_trump_more_effective_than_biden) %>%
+  select(state, percent_trump_more_effective_than_biden, biden_avg_view_per_dollar, trump_avg_view_per_dollar)
+
+write_csv(state_effectiveness, "graph_data_1/state_effectiveness.csv")
+
+
+biden_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  mutate(views_per_dollar = impressions_avg/spend_avg) %>%
+  summarize(mean = mean(views_per_dollar, na.rm = TRUE))
+#36.11
+
+trump_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  mutate(views_per_dollar = impressions_avg/spend_avg) %>%
+  summarize(mean = mean(views_per_dollar, na.rm = TRUE))
+#45.65
+
+```
+
+```{r}
+
+biden_rel <- right_join(biden_fb_grouped, biden_dr, by = "state") %>%
+  filter(total_spend_biden != "NA")
+
+
+biden_graph_rel <- biden_rel %>%
+#  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+#           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(x = total_spend_biden, y = biden_fundraise)) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2) +
+  labs(title = "Ad Spending and Fundraising in Swing States for Biden")
+
+
+trump_rel <- right_join(trump_fb_grouped, trump_dr, by = "state") %>%
+  filter(total_spend_trump != "NA")
+
+
+biden_graph_rel <- trump_rel %>%
+#  filter(state == "MI" | state == "MN" | state == "AZ" | state == "GA" | state == "PA" | state == "FL" |
+#           state == "WI" | state == "NV" | state == "NC" | state == "OH" | state == "TX" | state == "IA") %>%
+  ggplot(aes(x = total_spend_trump, y = trump_fundraise, color = "red")) +
+  geom_point() +
+  geom_smooth(method=lm) + 
+  geom_text(aes(label=state),hjust=-.5, vjust=-.5, size = 2) +
+  labs(title = "Ad Spending and Fundraising in Swing States for Trump")
+
+```
+
+
+
+
+```{r troubleshooting}
+biden_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  summarize(total_views = sum(impressions_avg), total_spend = sum(spend_avg))
+
+trump_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  summarize(total_views = sum(impressions_avg), total_spend = sum(spend_avg))
+```
+
+```{r article2}
+trump_fb
+trump_fund <- read_csv("donor_research_data/Trump.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code, date = contribution_date)
+
+biden_fund <- read_csv("donor_research_data/Biden.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code, date = contribution_date)
+
+trump_fb_spend <- trump_fb %>%
+  select(date, state, spend_avg) %>%
+  #CHANGE STATE HERE
+  filter(date > "2020-04-08", state == "FL") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total_spend = sum(spend_avg))
+
+trump_fund_weekly <- trump_fund %>%
+  select(state, date, sum) %>%
+  # CHANGE STATE HERE
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total_fundraise = sum(sum))
+
+trump_comparison <- right_join(trump_fb_spend, trump_fund_weekly, by = "week")
+
+
+trump_comparison_plot <- ggplot(trump_comparison, aes(x = week)) +
+  geom_line(aes(y = total_spend, colour = "Ad Spending", linetype = "Ad Spending")) +
+  
+  geom_line(aes(y = total_fundraise/1.5, colour = "Fundraising", linetype = "Fundraising")) +
+  
+  scale_y_continuous(sec.axis = sec_axis(~.*1.5, name = "Fundraising")) +
+  
+  labs(y = "Ad Spending", x = "", colour = "Variable", linetype = "Variable", title = "Trump Facebook Ad Spending and Fundraising in FL") +
+  scale_color_manual(name="Variable",
+                       breaks = c("Fundraising", "Ad Spending"),
+                       values = c("Fundraising" = "red", "Ad Spending" = "red")) +
+
+  scale_linetype_manual(breaks = c("Fundraising", "Ad Spending"),
+                        values = c("Fundraising" = "dashed", "Ad Spending" = "solid")) +
+  theme_minimal()
+
+
+trump_fb
+trump_fund <- read_csv("donor_research_data/Trump.csv") %>%
+  arrange(desc(contribution_date)) %>%
+  mutate(state = state_code, date = contribution_date)
+
+trump_fb_impressions <- trump_fb %>%
+  mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+  select(date, state, impressions_avg) %>%
+  #CHANGE STATE HERE
+  filter(date > "2020-04-08") %>%
+  mutate(week = week(date)) %>%
+  mutate(week = date_in_week(2020, week, 1)) %>%
+  group_by(week) %>%
+  summarise(total_impressions = sum(impressions_avg))
+
+trump_comparison_imp <- right_join(trump_fb_impressions, trump_fund_weekly, by = "week")
+
+trump_comparison_plot_imp <- ggplot(trump_comparison_imp, aes(x = week)) +
+  geom_line(aes(y = total_impressions, colour = "Impressions", linetype = "Impressions")) +
+  
+  geom_line(aes(y = total_fundraise/.075, colour = "Fundraising", linetype = "Fundraising")) +
+  
+  scale_y_continuous(sec.axis = sec_axis(~.*.075, name = "Fundraising")) +
+  
+  labs(y = "Impressions", x = "", colour = "Variable", linetype = "Variable", title = "Trump Facebook Ad Impressions and Fundraising Nationwide") +
+  scale_color_manual(name="Variable",
+                       breaks = c("Fundraising", "Impressions"),
+                       values = c("Fundraising" = "red", "Impressions" = "red")) +
+
+  scale_linetype_manual(breaks = c("Fundraising", "Impressions"),
+                        values = c("Fundraising" = "dashed", "Impressions" = "solid")) +
+  theme_minimal()
+
+
+
+make_state_graph_trump <- function(state_input, scaler){
+  
+  FUNC_trump_fund_weekly <- trump_fund %>%
+    select(state, date, sum) %>%
+    # CHANGE STATE HERE
+    filter(date > "2020-04-08", state == state_input) %>%
+    mutate(week = week(date)) %>%
+    mutate(week = date_in_week(2020, week, 1)) %>%
+    group_by(week) %>%
+    summarise(total_fundraise = sum(sum))
+  
+  FUNC_trump_fb_impressions <- trump_fb %>%
+    mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+    select(date, state, impressions_avg) %>%
+    #CHANGE STATE HERE
+    filter(date > "2020-04-08", state == state_input) %>%
+    mutate(week = week(date)) %>%
+    mutate(week = date_in_week(2020, week, 1)) %>%
+    group_by(week) %>%
+    summarise(total_impressions = sum(impressions_avg))
+  
+  FUNC_trump_comparison_imp <- right_join(FUNC_trump_fb_impressions, FUNC_trump_fund_weekly, by = "week")
+  
+  FUNC_trump_comparison_plot_imp <- ggplot(FUNC_trump_comparison_imp, aes(x = week)) +
+    geom_line(aes(y = total_impressions, colour = "Impressions", linetype = "Impressions")) +
+    
+    geom_line(aes(y = total_fundraise/scaler, colour = "Fundraising", linetype = "Fundraising")) +
+    
+    scale_y_continuous(sec.axis = sec_axis(~.*scaler, name = "Fundraising")) +
+    
+    labs(y = "Impressions", x = "", colour = "Variable", linetype = "Variable", 
+         title = paste("Trump Facebook Ad Impressions and Fundraising in ", state_input, sep = "")) +
+    scale_color_manual(name="Variable",
+                         breaks = c("Fundraising", "Impressions"),
+                         values = c("Fundraising" = "red", "Impressions" = "red")) +
+    scale_linetype_manual(breaks = c("Fundraising", "Impressions"),
+                          values = c("Fundraising" = "dashed", "Impressions" = "solid")) +
+    theme_minimal()
+  
+
+  FUNC_trump_comparison_plot_imp
+  
+}
+
+make_state_graph_biden <- function(state_input, scaler){
+  
+  FUNC_biden_fund_weekly <- biden_fund %>%
+    select(state, date, sum) %>%
+    # CHANGE STATE HERE
+    filter(date > "2020-04-08", state == state_input) %>%
+    mutate(week = week(date)) %>%
+    mutate(week = date_in_week(2020, week, 1)) %>%
+    group_by(week) %>%
+    summarise(total_fundraise = sum(sum))
+  
+  FUNC_biden_fb_impressions <- biden_fb %>%
+    mutate(impressions_avg = (impressions_lower + impressions_upper)/2) %>%
+    select(date, state, impressions_avg) %>%
+    #CHANGE STATE HERE
+    filter(date > "2020-04-08", state == state_input) %>%
+    mutate(week = week(date)) %>%
+    mutate(week = date_in_week(2020, week, 1)) %>%
+    group_by(week) %>%
+    summarise(total_impressions = sum(impressions_avg))
+  
+  FUNC_biden_comparison_imp <- right_join(FUNC_biden_fb_impressions, FUNC_biden_fund_weekly, by = "week")
+  
+  FUNC_biden_comparison_plot_imp <- ggplot(FUNC_biden_comparison_imp, aes(x = week)) +
+    geom_line(aes(y = total_impressions, colour = "Impressions", linetype = "Impressions")) +
+    
+    geom_line(aes(y = total_fundraise/scaler, colour = "Fundraising", linetype = "Fundraising")) +
+    
+    scale_y_continuous(sec.axis = sec_axis(~.*scaler, name = "Fundraising")) +
+    
+    labs(y = "Impressions", x = "", colour = "Variable", linetype = "Variable", 
+         title = paste("Biden Facebook Ad Impressions and Fundraising in ", state_input, sep = "")) +
+    scale_color_manual(name="Variable",
+                         breaks = c("Fundraising", "Impressions"),
+                         values = c("Fundraising" = "blue", "Impressions" = "blue")) +
+    scale_linetype_manual(breaks = c("Fundraising", "Impressions"),
+                          values = c("Fundraising" = "dashed", "Impressions" = "solid")) +
+    theme_minimal()
+
+    FUNC_biden_comparison_plot_imp
+  
+}
+
+make_state_graph_biden('OR', 0.075)
+make_state_graph_trump('OR', 0.075)
+
 
 ```
 
